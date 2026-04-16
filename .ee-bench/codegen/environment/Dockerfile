@@ -66,6 +66,12 @@ RUN git clone https://github.com/{{ instance.owner }}/{{ instance.repo_name }}.g
 WORKDIR /app
 RUN git checkout {{ instance.base_commit }}
 
+RUN dotnet add "./test/Spectre.Console.Analyzer.Tests/Spectre.Console.Analyzer.Tests.csproj" package JUnitTestLogger && \
+    dotnet add "./test/Spectre.Console.Tests/Spectre.Console.Tests.csproj" package JUnitTestLogger && \
+    dotnet add "./test/Spectre.Console.Cli.Tests/Spectre.Console.Cli.Tests.csproj" package JUnitTestLogger && \
+    dotnet add "./src/Tests/Spectre.Console.Tests/Spectre.Console.Tests.csproj" package JUnitTestLogger && \
+    dotnet build "./src/Spectre.Console.sln"
+
 LABEL ee-bench.type="codegen"
 LABEL ee-bench.version="1.0"
 RUN rm -rf /app/.ee-bench/ 2>/dev/null || true

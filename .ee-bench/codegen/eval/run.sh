@@ -23,7 +23,7 @@ _run_tests() {
 
   set +e
   dotnet test {{ instance.test_framework_flag }} "{{ instance.test_project }}" \
-    --logger "{{ instance.test_logger }}" \
+    --logger "{{ instance.test_logger }}" {{ instance.build_flags }} \
     > "/tmp/${label}_stdout.log" 2> "/tmp/${label}_stderr.log"
   set -e
 
@@ -54,7 +54,7 @@ fi
 # ============================================================
 COMPILE_START=$SECONDS
 COMPILE_STATUS="pass"
-bash "$EVAL_DIR/scripts/install.sh" > /tmp/compile_stdout.log 2> /tmp/compile_stderr.log || {
+dotnet build "./src/Spectre.Console.sln" > /tmp/compile_stdout.log 2> /tmp/compile_stderr.log || {
   COMPILE_STATUS="fail"
 }
 COMPILE_DURATION=$(_elapsed $COMPILE_START)
@@ -90,7 +90,7 @@ PATCH_DURATION=$(_elapsed $PATCH_START)
 # ============================================================
 REBUILD_STATUS="skipped"
 if [ "$COMPILE_STATUS" = "pass" ] && [ "$PATCH_STATUS" = "pass" ]; then
-  bash "$EVAL_DIR/scripts/install.sh" > /tmp/rebuild_stdout.log 2> /tmp/rebuild_stderr.log || {
+  dotnet build "./src/Spectre.Console.sln" > /tmp/rebuild_stdout.log 2> /tmp/rebuild_stderr.log || {
     REBUILD_STATUS="fail"
     COMPILE_STATUS="fail"
   }
