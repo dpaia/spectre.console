@@ -12,9 +12,14 @@ OVERALL_START=$SECONDS
 
 _elapsed() { echo $(( SECONDS - ${1:-$OVERALL_START} )); }
 
+_restore_and_build() {
+  dotnet restore "{{ instance.test_project }}" && \
+    dotnet build --no-restore {{ instance.test_framework_flag }} "{{ instance.test_project }}"
+}
+
 # --- _run_tests: run dotnet test with isolated ARTIFACTS_DIR ---
 # Usage: _run_tests <label>
-# Writes: /tmp/<label>_stdout.log, /tmp/<label>_stderr.log, /tmp/<label>_parser.json
+# Writes: /tmp/<label>_stdout.log, /tmp/<label>_stderr.log, /tmp/<label>_parser.json, /tmp/<label>_exit_code
 _run_tests() {
   local label="$1"
   local orig_artifacts="$ARTIFACTS_DIR"
@@ -23,14 +28,14 @@ _run_tests() {
 
   set +e
   dotnet test --no-build {{ instance.test_framework_flag }} "{{ instance.test_project }}" \
-    --logger "{{ instance.test_logger }}" \
+    --logger "trx;LogFileName=results.trx" \
     --results-directory "$ARTIFACTS_DIR" \
     > "/tmp/${label}_stdout.log" 2> "/tmp/${label}_stderr.log"
   local test_exit=$?
   set -e
   echo "$test_exit" > "/tmp/${label}_exit_code"
 
-  python3 "$EVAL_DIR/scripts/ee_bench_parser_trx.py" "$ARTIFACTS_DIR" > "/tmp/${label}_parser.json" 2>/dev/null || echo '{}' > "/tmp/${label}_parser.json"
+  python3 "$EVAL_DIR/scripts/parser.py" "$ARTIFACTS_DIR" > "/tmp/${label}_parser.json" 2>/dev/null || echo '{}' > "/tmp/${label}_parser.json"
 
   export ARTIFACTS_DIR="$orig_artifacts"
 }
@@ -48,34 +53,38 @@ fi
 # ============================================================
 COMPILE_START=$SECONDS
 COMPILE_STATUS="pass"
-bash "$EVAL_DIR/scripts/install.sh" > /tmp/compile_stdout.log 2> /tmp/compile_stderr.log || {
+_restore_and_build > /tmp/compile_stdout.log 2> /tmp/compile_stderr.log || {
   COMPILE_STATUS="fail"
 }
 COMPILE_DURATION=$(_elapsed $COMPILE_START)
 
 # ============================================================
-# Run baseline tests (clean base, before test_patch)
-# Establishes pass_to_pass baseline and fail_to_pass baseline.
+# Apply test patch and run baseline tests
 # ============================================================
 HAS_TEST_PATCH="false"
-if [ -f "$EVAL_DIR/test_patch.diff" ]; then
+BASELINE_DURATION=0
+BASELINE_TEST_EXIT_CODE=0
+if [ -s "$EVAL_DIR/test_patch.diff" ]; then
   HAS_TEST_PATCH="true"
 fi
 
-BASELINE_DURATION=0
-BASELINE_TEST_EXIT_CODE=0
 if [ "$COMPILE_STATUS" = "pass" ]; then
-  BASELINE_START=$SECONDS
-  _run_tests baseline
-  BASELINE_TEST_EXIT_CODE="$(cat /tmp/baseline_exit_code 2>/dev/null || echo 0)"
-  BASELINE_DURATION=$(_elapsed $BASELINE_START)
-fi
+  if [ "$HAS_TEST_PATCH" = "true" ]; then
+    if git apply -v "$EVAL_DIR/test_patch.diff" > /tmp/test_patch_stdout.log 2> /tmp/test_patch_stderr.log; then
+      _restore_and_build > /tmp/test_patch_build_stdout.log 2> /tmp/test_patch_build_stderr.log || {
+        COMPILE_STATUS="fail"
+      }
+    else
+      COMPILE_STATUS="fail"
+    fi
+  fi
 
-# ============================================================
-# Apply test patch (after baseline, before gold patch)
-# ============================================================
-if [ "$HAS_TEST_PATCH" = "true" ]; then
-  git apply -v "$EVAL_DIR/test_patch.diff" 2>/dev/null || true
+  if [ "$COMPILE_STATUS" = "pass" ]; then
+    BASELINE_START=$SECONDS
+    _run_tests baseline
+    BASELINE_TEST_EXIT_CODE="$(cat /tmp/baseline_exit_code 2>/dev/null || echo 0)"
+    BASELINE_DURATION=$(_elapsed $BASELINE_START)
+  fi
 fi
 
 # ============================================================
@@ -97,16 +106,14 @@ PATCH_DURATION=$(_elapsed $PATCH_START)
 # ============================================================
 # Rebuild after test_patch and/or submission patch
 # ============================================================
-# Must also rebuild when test_patch was applied — dotnet test --no-build
-# would otherwise run the pre-test_patch DLL and miss any newly added tests.
 REBUILD_STATUS="skipped"
-if [ "$PATCH_STATUS" = "pass" ] || [ "$HAS_TEST_PATCH" = "true" ]; then
-  bash "$EVAL_DIR/scripts/install.sh" > /tmp/rebuild_stdout.log 2> /tmp/rebuild_stderr.log || {
+if [ "$PATCH_STATUS" = "pass" ]; then
+  _restore_and_build > /tmp/rebuild_stdout.log 2> /tmp/rebuild_stderr.log || {
     REBUILD_STATUS="fail"
+    COMPILE_STATUS="fail"
   }
   if [ "$REBUILD_STATUS" != "fail" ]; then
     REBUILD_STATUS="pass"
-    COMPILE_STATUS="pass"
   fi
 fi
 
@@ -115,7 +122,7 @@ fi
 # ============================================================
 TEST_DURATION=0
 EVAL_TEST_EXIT_CODE=0
-if [ "$REBUILD_STATUS" = "pass" ] || ([ "$COMPILE_STATUS" = "pass" ] && [ "$PATCH_STATUS" != "fail" ]); then
+if [ "$COMPILE_STATUS" = "pass" ] && [ "$PATCH_STATUS" = "pass" ]; then
   TEST_START=$SECONDS
   _run_tests eval
   EVAL_TEST_EXIT_CODE="$(cat /tmp/eval_exit_code 2>/dev/null || echo 0)"
@@ -126,7 +133,7 @@ OVERALL_DURATION=$(_elapsed $OVERALL_START)
 
 # --- Write temp files for safe passing to Python emitter ---
 echo "$PATCH_OUTPUT" > /tmp/_patch_output.txt
-cat /tmp/compile_stdout.log /tmp/compile_stderr.log > /tmp/_compile_output.txt 2>/dev/null || true
+cat /tmp/compile_stdout.log /tmp/compile_stderr.log /tmp/test_patch_stderr.log /tmp/rebuild_stderr.log > /tmp/_compile_output.txt 2>/dev/null || true
 
 # --- Write expected test lists to file (avoids shell quoting issues) ---
 cat > /tmp/_expected.json << 'EXPECTED_EOF'
@@ -134,10 +141,10 @@ cat > /tmp/_expected.json << 'EXPECTED_EOF'
 EXPECTED_EOF
 
 # ============================================================
-# Emit EE-bench JSON v2.0 (7 criteria)
+# Emit EE-bench JSON v2.0
 # ============================================================
 export PATCH_STATUS PATCH_DURATION COMPILE_STATUS COMPILE_DURATION
 export TEST_DURATION BASELINE_DURATION OVERALL_DURATION TIMESTAMP
 export HAS_TEST_PATCH BASELINE_TEST_EXIT_CODE EVAL_TEST_EXIT_CODE
 
-python3 "$EVAL_DIR/scripts/ee_bench_eval.py"
+python3 "$EVAL_DIR/scripts/emitter.py"

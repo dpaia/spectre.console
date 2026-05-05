@@ -7,7 +7,6 @@ Usage: python3 ee_bench_parser_trx.py <artifacts_dir>
 """
 import json
 import os
-import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -18,25 +17,6 @@ def _truncate(text, limit=MAX_STACKTRACE):
     if text and len(text) > limit:
         return text[:limit] + "\n... [truncated]"
     return text
-
-
-def _decode_json_unicode_escapes(name):
-    if "\\u" not in name:
-        return name
-
-    def replace_escape(match):
-        return chr(int(match.group(1), 16))
-
-    decoded = re.sub(r"\\u([0-9a-fA-F]{4})", replace_escape, name)
-    return decoded.encode("utf-16", "surrogatepass").decode("utf-16")
-
-
-def canonical_name(name):
-    return _decode_json_unicode_escapes(name).replace("+", ".")
-
-
-def match_keys(name):
-    return sorted({name, canonical_name(name)})
 
 
 def parse_trx(root):
@@ -61,12 +41,7 @@ def parse_trx(root):
             except (ValueError, IndexError):
                 pass
 
-        entry = {
-            "name": name,
-            "canonical_name": canonical_name(name),
-            "match_keys": match_keys(name),
-            "duration_seconds": duration,
-        }
+        entry = {"name": name, "duration_seconds": duration}
 
         if outcome == "passed":
             entry["status"] = "passed"
