@@ -968,7 +968,7 @@
     "dockerfile_tag": "spectreconsole__spectre_console"
   },
   "language": "csharp",
-  "test_framework_flag": "--framework net5.0",
+  "test_framework_flag": "--framework net6.0",
   "execution_flags": "-Dqodana.net.solution=src/Spectre.Console.sln",
   "test_project": "./test/Spectre.Console.Tests/Spectre.Console.Tests.csproj",
   "fields": {
